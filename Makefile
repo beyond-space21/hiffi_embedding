@@ -2,7 +2,7 @@
 
 extract-frames:
 	@mkdir -p "$(TEMP_DIR)/$(VIDEO_ID)/frames"
-	@ffmpeg -hide_banner -loglevel error -y -i "$(VIDEO_URL)" -vf "fps=$(FRAME_EXTRACT_FPS)" "$(TEMP_DIR)/$(VIDEO_ID)/frames/frame_%06d.png"
+	@ffmpeg -hide_banner -loglevel error -y -i "$(VIDEO_URL)" -vf "select='gt(scene,$(FRAME_SCENE_THRESHOLD))',fps=$(FRAME_EXTRACT_FPS)" -vsync vfr "$(TEMP_DIR)/$(VIDEO_ID)/frames/frame_%06d.png"
 
 extract-audio:
 	@mkdir -p "$(TEMP_DIR)/$(VIDEO_ID)"

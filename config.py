@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     QDRANT_UPSERT_BATCH_SIZE: int = 32
     SEARCH_CLIP_WEIGHT: float = 0.8
     SEARCH_CLAP_WEIGHT: float = 0.2
+    SEARCH_ENABLE_INTENT_WEIGHTS: bool = True
+    SEARCH_METADATA_WEIGHT: float = 0.12
+    SEARCH_RERANK_CANDIDATES: int = 100
 
     OPENAI_API_KEY: str
     OPENAI_QUERY_MODEL: str = "gpt-4o-mini"
@@ -27,8 +30,11 @@ class Settings(BaseSettings):
     CACHE_DIR: str = "/mount/disk/huggingface_models"
     TEMP_DIR: str = "temp"
     FRAME_EXTRACT_FPS: float = 1.0
+    FRAME_SCENE_THRESHOLD: float = 0.08
+    FRAME_SUMMARY_VECTORS: int = 4
     FRAME_BATCH_SIZE: int = 32
     AUDIO_BATCH_SIZE: int = 16
+    AUDIO_SUMMARY_VECTOR: bool = True
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -37,6 +37,7 @@ def preprocess_video(mp4_url: str, video_id: str) -> tuple[str, str]:
                 f"VIDEO_ID={safe_video_id}",
                 f"VIDEO_URL={mp4_url}",
                 f"FRAME_EXTRACT_FPS={settings.FRAME_EXTRACT_FPS}",
+                f"FRAME_SCENE_THRESHOLD={settings.FRAME_SCENE_THRESHOLD}",
             ],
             check=True,
         )
@@ -102,7 +103,7 @@ def consume_forever(worker_id: int) -> None:
             mp4_url = msg["mp4_url"]
             print(
                 f"[worker-{worker_id}] Processing video: {video_id} "
-                f"(frame_fps={settings.FRAME_EXTRACT_FPS})"
+                f"(frame_fps={settings.FRAME_EXTRACT_FPS}, scene_thr={settings.FRAME_SCENE_THRESHOLD})"
             )
 
             t0 = time.perf_counter()

@@ -293,22 +293,28 @@ def index_video(frames_folder: str, audio_path: str, metadata: Dict, video_id: s
         all_frame_embeddings.extend(batch_embeddings)
     if all_frame_embeddings:
         frame_matrix = np.asarray(all_frame_embeddings, dtype=np.float32)
-        frame_mean = frame_matrix.mean(axis=0)
-        frame_norm = np.linalg.norm(frame_mean)
-        if frame_norm > 0:
-            frame_mean = frame_mean / frame_norm
-        frame_points.append(
-            {
-                "id": _point_id(video_id, "frame", "all"),
-                "vector": {"clip": frame_mean.tolist(), "clap": [0.0] * 512},
-                "payload": {
-                    "type": "frame_summary",
-                    "video_id": video_id,
-                    "frame_count": len(all_frame_embeddings),
-                    **metadata,
-                },
-            }
-        )
+        summary_vectors = max(1, settings.FRAME_SUMMARY_VECTORS)
+        summary_vectors = min(summary_vectors, len(frame_matrix))
+        grouped = np.array_split(frame_matrix, summary_vectors)
+        for idx, group in enumerate(grouped):
+            frame_mean = group.mean(axis=0)
+            frame_norm = np.linalg.norm(frame_mean)
+            if frame_norm > 0:
+                frame_mean = frame_mean / frame_norm
+            frame_points.append(
+                {
+                    "id": _point_id(video_id, "frame", f"summary_{idx}"),
+                    "vector": {"clip": frame_mean.tolist(), "clap": [0.0] * 512},
+                    "payload": {
+                        "type": "frame_summary",
+                        "video_id": video_id,
+                        "frame_count": len(all_frame_embeddings),
+                        "summary_index": idx,
+                        "summary_vectors": summary_vectors,
+                        **metadata,
+                    },
+                }
+            )
     frame_embed_time = time.perf_counter() - frame_embed_start
 
     # Audio (CLAP) - 3-second chunks, batched
@@ -339,6 +345,24 @@ def index_video(frames_folder: str, audio_path: str, metadata: Dict, video_id: s
                     },
                 }
             )
+    if settings.AUDIO_SUMMARY_VECTOR and audio_points:
+        audio_matrix = np.asarray([p["vector"]["clap"] for p in audio_points], dtype=np.float32)
+        audio_mean = audio_matrix.mean(axis=0)
+        audio_norm = np.linalg.norm(audio_mean)
+        if audio_norm > 0:
+            audio_mean = audio_mean / audio_norm
+        audio_points.append(
+            {
+                "id": _point_id(video_id, "audio", "summary"),
+                "vector": {"clip": [0.0] * 512, "clap": audio_mean.tolist()},
+                "payload": {
+                    "type": "audio_summary",
+                    "video_id": video_id,
+                    "chunk_count": len(audio_chunks),
+                    **metadata,
+                },
+            }
+        )
     audio_embed_time = time.perf_counter() - audio_embed_start
 
     points = frame_points + audio_points
