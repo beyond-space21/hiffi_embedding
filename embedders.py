@@ -101,6 +101,28 @@ def _chunks(seq: list, batch_size: int):
         yield seq[i : i + batch_size]
 
 
+def _upsert_points_batched(points: list[dict]) -> None:
+    batch_size = max(1, settings.QDRANT_UPSERT_BATCH_SIZE)
+    for batch in _chunks(points, batch_size):
+        _upsert_with_fallback(batch)
+
+
+def _upsert_with_fallback(batch: list[dict]) -> None:
+    if not batch:
+        return
+    try:
+        qdrant.upsert(collection_name=settings.COLLECTION_NAME, points=batch)
+    except Exception as exc:
+        msg = str(exc).lower()
+        too_large = "payload error" in msg or "larger than allowed" in msg
+        if too_large and len(batch) > 1:
+            mid = len(batch) // 2
+            _upsert_with_fallback(batch[:mid])
+            _upsert_with_fallback(batch[mid:])
+            return
+        raise
+
+
 def embed_image(image: Image.Image) -> list[float]:
     inputs = clip_processor(images=[image], return_tensors="pt")
     inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
@@ -264,23 +286,29 @@ def index_video(frames_folder: str, audio_path: str, metadata: Dict, video_id: s
             frame_items.append((frame_number, img.convert("RGB")))
 
     frame_embed_start = time.perf_counter()
+    all_frame_embeddings: list[list[float]] = []
     for batch in _chunks(frame_items, max(1, settings.FRAME_BATCH_SIZE)):
-        batch_numbers = [item[0] for item in batch]
         batch_images = [item[1] for item in batch]
         batch_embeddings = embed_images(batch_images)
-        for frame_number, emb in zip(batch_numbers, batch_embeddings):
-            frame_points.append(
-                {
-                    "id": _point_id(video_id, "frame", str(frame_number)),
-                    "vector": {"clip": emb, "clap": [0.0] * 512},
-                    "payload": {
-                        "type": "frame",
-                        "video_id": video_id,
-                        "frame": frame_number,
-                        **metadata,
-                    },
-                }
-            )
+        all_frame_embeddings.extend(batch_embeddings)
+    if all_frame_embeddings:
+        frame_matrix = np.asarray(all_frame_embeddings, dtype=np.float32)
+        frame_mean = frame_matrix.mean(axis=0)
+        frame_norm = np.linalg.norm(frame_mean)
+        if frame_norm > 0:
+            frame_mean = frame_mean / frame_norm
+        frame_points.append(
+            {
+                "id": _point_id(video_id, "frame", "all"),
+                "vector": {"clip": frame_mean.tolist(), "clap": [0.0] * 512},
+                "payload": {
+                    "type": "frame_summary",
+                    "video_id": video_id,
+                    "frame_count": len(all_frame_embeddings),
+                    **metadata,
+                },
+            }
+        )
     frame_embed_time = time.perf_counter() - frame_embed_start
 
     # Audio (CLAP) - 3-second chunks, batched
@@ -316,7 +344,7 @@ def index_video(frames_folder: str, audio_path: str, metadata: Dict, video_id: s
     points = frame_points + audio_points
     upsert_start = time.perf_counter()
     if points:
-        qdrant.upsert(collection_name=settings.COLLECTION_NAME, points=points)
+        _upsert_points_batched(points)
     upsert_time = time.perf_counter() - upsert_start
 
     total_time = time.perf_counter() - t0
