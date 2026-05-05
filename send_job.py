@@ -3,8 +3,8 @@ import pika
 from config import settings
 
 message = {
-    "video_id": "8e136bb0294152b338b9d09646efc8f830bb8795de92901229dee7c310a8d2b2",
-    "mp4_url": "https://prod.hiffi.workers.dev/videos/8e136bb0294152b338b9d09646efc8f830bb8795de92901229dee7c310a8d2b2/original.mp4",
+    "video_id": "724c3d2b22ad57a7ce84841327958a6b92778f2d0e50f45a2eb5b6d08072ea40",
+    "mp4_url": "https://dev.hiffi.workers.dev/videos/724c3d2b22ad57a7ce84841327958a6b92778f2d0e50f45a2eb5b6d08072ea40/original.mp4",
     "metadata": {"title": "Car jumping on street", "source": "youtube"},
 }
 

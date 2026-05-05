@@ -85,8 +85,17 @@ def consume_forever(worker_id: int) -> None:
         except urlerror.URLError as exc:
             raise RuntimeError(f"vector position API request failed: {exc.reason}") from exc
 
+    def cleanup_video_temp(video_id: str) -> None:
+        safe_video_id = _safe_video_dir(video_id)
+        base_temp = Path(settings.TEMP_DIR).resolve()
+        target_dir = (base_temp / safe_video_id).resolve()
+        if base_temp not in target_dir.parents:
+            raise RuntimeError(f"refusing cleanup outside TEMP_DIR: {target_dir}")
+        shutil.rmtree(target_dir, ignore_errors=True)
+
     def callback(ch, method, properties, body) -> None:
         msg = None
+        video_id = "unknown"
         try:
             msg = json.loads(body)
             video_id = msg["video_id"]
@@ -129,6 +138,13 @@ def consume_forever(worker_id: int) -> None:
                 failed_video_id = msg.get("video_id", "unknown")
             print(f"[worker-{worker_id}] Failed {failed_video_id}: {e}")
             ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+        finally:
+            if video_id != "unknown":
+                try:
+                    cleanup_video_temp(video_id)
+                    print(f"[worker-{worker_id}] Cleaned temp for {video_id}")
+                except Exception as cleanup_exc:
+                    print(f"[worker-{worker_id}] Temp cleanup failed for {video_id}: {cleanup_exc}")
 
     print(f"[worker-{worker_id}] Embedding runtime device: {runtime_device_label()}")
     ensure_collection()
