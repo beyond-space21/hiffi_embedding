@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     QDRANT_URL: str
     COLLECTION_NAME: str = "video_search"
     QDRANT_UPSERT_BATCH_SIZE: int = 32
+    SEARCH_CLIP_WEIGHT: float = 0.8
+    SEARCH_CLAP_WEIGHT: float = 0.2
 
     OPENAI_API_KEY: str
     OPENAI_QUERY_MODEL: str = "gpt-4o-mini"
