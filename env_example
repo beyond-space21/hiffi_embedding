@@ -12,6 +12,8 @@ QDRANT_URL=http://localhost:6333
 COLLECTION_NAME=video_search
 
 OPENAI_API_KEY=sk-s....
+BASE_API_URL=https://api.example.com
+AUTH_X_APP=replace-with-app-token
 CACHE_DIR=/mount/disk/huggingface_models
 TEMP_DIR=temp
 FRAME_EXTRACT_FPS=1

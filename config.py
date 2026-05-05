@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     COLLECTION_NAME: str = "video_search"
 
     OPENAI_API_KEY: str
+    BASE_API_URL: str | None = None
+    AUTH_X_APP: str | None = None
     CACHE_DIR: str = "/mount/disk/huggingface_models"
     TEMP_DIR: str = "temp"
     FRAME_EXTRACT_FPS: float = 1.0

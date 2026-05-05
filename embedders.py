@@ -209,7 +209,7 @@ def load_audio(audio_path: str, sample_rate: int = _SAMPLE_RATE):
     return audio
 
 
-def index_video(frames_folder: str, audio_path: str, metadata: Dict, video_id: str) -> None:
+def index_video(frames_folder: str, audio_path: str, metadata: Dict, video_id: str) -> int:
     t0 = time.perf_counter()
     frame_points = []
     audio_points = []
@@ -287,3 +287,4 @@ def index_video(frames_folder: str, audio_path: str, metadata: Dict, video_id: s
         f"audio_emb={audio_embed_time:.2f}s | "
         f"upsert={upsert_time:.2f}s | total={total_time:.2f}s"
     )
+    return len(points)

@@ -5,6 +5,8 @@ from pathlib import Path
 import shutil
 import subprocess
 import time
+from urllib import error as urlerror
+from urllib import request as urlrequest
 
 import pika
 
@@ -57,6 +59,32 @@ def consume_forever(worker_id: int) -> None:
     from embedders import index_video
     from embedders import runtime_device_label
 
+    def post_vector_position(video_id: str, vector_position: int) -> None:
+        if not settings.BASE_API_URL or not settings.AUTH_X_APP:
+            raise RuntimeError("BASE_API_URL and AUTH_X_APP must be set in environment")
+
+        base_url = settings.BASE_API_URL.rstrip("/")
+        url = f"{base_url}/videos/embedding/vector-position/{video_id}"
+        payload = json.dumps({"vector_position": vector_position}).encode("utf-8")
+        req = urlrequest.Request(
+            url,
+            data=payload,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Auth-X-App": settings.AUTH_X_APP,
+            },
+        )
+        try:
+            with urlrequest.urlopen(req, timeout=20) as resp:
+                status_code = getattr(resp, "status", None) or resp.getcode()
+            if status_code < 200 or status_code >= 300:
+                raise RuntimeError(f"vector position API returned status {status_code}")
+        except urlerror.HTTPError as exc:
+            raise RuntimeError(f"vector position API HTTP {exc.code}") from exc
+        except urlerror.URLError as exc:
+            raise RuntimeError(f"vector position API request failed: {exc.reason}") from exc
+
     def callback(ch, method, properties, body) -> None:
         msg = None
         try:
@@ -74,12 +102,15 @@ def consume_forever(worker_id: int) -> None:
             preprocess_time = time.perf_counter() - preprocess_start
 
             index_start = time.perf_counter()
-            index_video(
+            vector_position = index_video(
                 frames_folder=frames_folder,
                 audio_path=audio_path,
                 metadata=msg.get("metadata", {}),
                 video_id=video_id,
             )
+            post_start = time.perf_counter()
+            post_vector_position(video_id=video_id, vector_position=vector_position)
+            post_time = time.perf_counter() - post_start
             index_time = time.perf_counter() - index_start
             total_time = time.perf_counter() - t0
 
@@ -88,6 +119,7 @@ def consume_forever(worker_id: int) -> None:
                 f"[worker-{worker_id}] Finished {video_id} | "
                 f"preprocess={preprocess_time:.2f}s | "
                 f"index={index_time:.2f}s | "
+                f"notify={post_time:.2f}s | "
                 f"job_total={total_time:.2f}s"
             )
 
