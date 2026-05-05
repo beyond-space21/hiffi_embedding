@@ -9,7 +9,9 @@ from config import settings
 
 def recreate_collection() -> None:
     client = QdrantClient(settings.QDRANT_URL)
-    client.recreate_collection(
+    if client.collection_exists(settings.COLLECTION_NAME):
+        client.delete_collection(collection_name=settings.COLLECTION_NAME)
+    client.create_collection(
         collection_name=settings.COLLECTION_NAME,
         vectors_config={
             "clip": VectorParams(size=512, distance=Distance.COSINE),
