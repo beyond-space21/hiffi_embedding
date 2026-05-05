@@ -5,7 +5,7 @@ from embedders import parse_query
 from embedders import qdrant
 
 
-def search(query: str, limit: int = 20) -> list[tuple[str, float]]:
+def search(query: str, limit: int = 20) -> dict:
     parts = optimize_query_parts(query)
     if not parts.get("visual") and not parts.get("audio"):
         parts = parse_query(query)
@@ -34,4 +34,12 @@ def search(query: str, limit: int = 20) -> list[tuple[str, float]]:
         vid = hit.payload["video_id"]
         scores[vid] = scores.get(vid, 0.0) + float(hit.score)
 
-    return sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    return {
+        "optimized_query": {
+            "raw": parts.get("raw", query.strip()),
+            "visual": parts.get("visual", ""),
+            "audio": parts.get("audio", ""),
+        },
+        "results": ranked,
+    }

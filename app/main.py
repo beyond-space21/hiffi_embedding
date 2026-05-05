@@ -30,8 +30,7 @@ class SearchRequest(BaseModel):
 
 @app.post("/search")
 async def search_endpoint(req: SearchRequest) -> dict:
-    results = search(req.query, req.limit)
-    return {"results": results}
+    return search(req.query, req.limit)
 
 
 @app.get("/health")
