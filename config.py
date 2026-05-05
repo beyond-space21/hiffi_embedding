@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     COLLECTION_NAME: str = "video_search"
 
     OPENAI_API_KEY: str
+    OPENAI_QUERY_MODEL: str = "gpt-4o-mini"
+    OPENAI_QUERY_OPTIMIZATION: bool = True
     BASE_API_URL: str | None = None
     BASE_API_VIDEO_URL: str | None = None
     AUTH_X_APP: str | None = None

@@ -12,6 +12,8 @@ QDRANT_URL=http://localhost:6333
 COLLECTION_NAME=video_search
 
 OPENAI_API_KEY=sk-s....
+OPENAI_QUERY_MODEL=gpt-4o-mini
+OPENAI_QUERY_OPTIMIZATION=true
 BASE_API_URL=https://api.example.com
 BASE_API_VIDEO_URL=https://dev.hiffi.workers.dev
 AUTH_X_APP=replace-with-app-token

@@ -9,7 +9,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.append(str(ROOT_DIR))
 
-from qdrant_service import search_with_openai
+from qdrant_service import search
 from embedders import runtime_device_label
 
 app = FastAPI(title="Video Semantic Search")
@@ -30,7 +30,8 @@ class SearchRequest(BaseModel):
 
 @app.post("/search")
 async def search_endpoint(req: SearchRequest) -> dict:
-    return search_with_openai(req.query, req.limit)
+    results = search(req.query, req.limit)
+    return {"results": results}
 
 
 @app.get("/health")

@@ -1,3 +1,4 @@
+import json
 import os
 import numpy as np
 import re
@@ -158,6 +159,46 @@ def parse_query(query: str) -> Dict[str, str]:
     for kind, value in tokens:
         parsed[kind.lower()] = value.strip()
     return parsed
+
+
+def optimize_query_parts(query: str) -> Dict[str, str]:
+    parsed = parse_query(query)
+    if not settings.OPENAI_QUERY_OPTIMIZATION:
+        return parsed
+
+    system_prompt = (
+        "You optimize user video-search queries for dual encoders.\n"
+        "Return JSON only with keys: visual, audio.\n"
+        "visual: concise scene/object/action description for image retrieval.\n"
+        "audio: concise sound/music/voice description for audio retrieval.\n"
+        "If user intent lacks modality details, infer realistic generic hints.\n"
+        "Do not include markdown."
+    )
+
+    try:
+        response = openai_client.chat.completions.create(
+            model=settings.OPENAI_QUERY_MODEL,
+            temperature=0.2,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {
+                    "role": "user",
+                    "content": (
+                        f"User query: {query}\n"
+                        f"Existing parsed hints (may be empty): {json.dumps(parsed)}"
+                    ),
+                },
+            ],
+        )
+        raw = response.choices[0].message.content or "{}"
+        optimized = json.loads(raw)
+        visual = str(optimized.get("visual", "")).strip()
+        audio = str(optimized.get("audio", "")).strip()
+        return {"visual": visual, "audio": audio, "raw": query.strip()}
+    except Exception as exc:
+        print(f"OpenAI query optimization failed, using raw query: {exc}")
+        return parsed
 
 
 def embed_query(parts: Dict[str, str]) -> Tuple[list[float], list[float]]:
