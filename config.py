@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     COLLECTION_NAME: str = "video_search"
     QDRANT_UPSERT_BATCH_SIZE: int = 32
     SEARCH_CLIP_WEIGHT: float = 0.8
-    SEARCH_CLAP_WEIGHT: float = 0.2
+    SEARCH_MERT_WEIGHT: float = 0.2
     SEARCH_ENABLE_INTENT_WEIGHTS: bool = True
     SEARCH_METADATA_WEIGHT: float = 0.12
     SEARCH_RERANK_CANDIDATES: int = 100

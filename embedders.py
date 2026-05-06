@@ -17,10 +17,10 @@ from PIL import Image
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance
 from qdrant_client.models import VectorParams
-from transformers import ClapModel
-from transformers import ClapProcessor
+from transformers import AutoModel
 from transformers import CLIPModel
 from transformers import CLIPProcessor
+from transformers import Wav2Vec2FeatureExtractor
 
 from config import settings
 
@@ -39,19 +39,23 @@ clip_processor = CLIPProcessor.from_pretrained(
     cache_dir=settings.CACHE_DIR,
 )
 
-clap_model = ClapModel.from_pretrained(
-    "laion/clap-htsat-unfused",
+MERT_MODEL_NAME = "m-a-p/MERT-v1-95M"
+MERT_SAMPLE_RATE = 24000
+
+mert_model = AutoModel.from_pretrained(
+    MERT_MODEL_NAME,
     cache_dir=settings.CACHE_DIR,
 ).to(DEVICE)
-clap_processor = ClapProcessor.from_pretrained(
-    "laion/clap-htsat-unfused",
+mert_processor = Wav2Vec2FeatureExtractor.from_pretrained(
+    MERT_MODEL_NAME,
     cache_dir=settings.CACHE_DIR,
 )
+MERT_DIM = int(mert_model.config.hidden_size)
 
 qdrant = QdrantClient(settings.QDRANT_URL)
 openai_client = OpenAI(api_key=settings.OPENAI_API_KEY)
 clip_model.eval()
-clap_model.eval()
+mert_model.eval()
 
 _POINT_ID_NS = uuid.UUID("a3f8c2e1-6b4d-5e9f-8c0d-1a2b3c4d5e6f")
 _SAMPLE_RATE = 48000
@@ -66,7 +70,7 @@ def ensure_collection() -> None:
         collection_name=settings.COLLECTION_NAME,
         vectors_config={
             "clip": VectorParams(size=512, distance=Distance.COSINE),
-            "clap": VectorParams(size=512, distance=Distance.COSINE),
+            "mert": VectorParams(size=MERT_DIM, distance=Distance.COSINE),
         },
     )
 
@@ -142,20 +146,50 @@ def embed_images(images: list[Image.Image]) -> list[list[float]]:
 
 
 def embed_audio(audio_chunk: Any) -> list[float]:
-    inputs = clap_processor(audio=[audio_chunk], sampling_rate=48000, return_tensors="pt")
-    inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
+    inputs = mert_processor(
+        [audio_chunk],
+        sampling_rate=MERT_SAMPLE_RATE,
+        return_tensors="pt",
+        padding=True,
+    )
+    inputs = {
+        k: v.to(DEVICE) if isinstance(v, torch.Tensor) else v
+        for k, v in inputs.items()
+    }
     with torch.inference_mode(), _autocast_context():
-        emb = _as_feature_tensor(clap_model.get_audio_features(**inputs))
+        outputs = mert_model(**inputs)
+        hidden = outputs.last_hidden_state
+        attn = inputs.get("attention_mask")
+        if attn is not None:
+            mask = attn.unsqueeze(-1).to(hidden.dtype)
+            emb = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1.0)
+        else:
+            emb = hidden.mean(dim=1)
     return normalize(emb)[0].cpu().tolist()
 
 
 def embed_audio_chunks(audio_chunks: list[Any]) -> list[list[float]]:
     if not audio_chunks:
         return []
-    inputs = clap_processor(audio=audio_chunks, sampling_rate=48000, return_tensors="pt")
-    inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
+    inputs = mert_processor(
+        audio_chunks,
+        sampling_rate=MERT_SAMPLE_RATE,
+        return_tensors="pt",
+        padding=True,
+    )
+    inputs = {
+        k: v.to(DEVICE) if isinstance(v, torch.Tensor) else v
+        for k, v in inputs.items()
+    }
     with torch.inference_mode(), _autocast_context():
-        emb = _as_feature_tensor(clap_model.get_audio_features(**inputs))
+        outputs = mert_model(**inputs)
+        hidden = outputs.last_hidden_state
+        attn = inputs.get("attention_mask")
+        if attn is not None:
+            mask = attn.unsqueeze(-1).to(hidden.dtype)
+            emb = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1.0)
+        else:
+            emb = hidden.mean(dim=1)
     return normalize(emb).cpu().tolist()
 
 
@@ -164,14 +198,6 @@ def embed_text_clip(text: str) -> list[float]:
     inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
     with torch.inference_mode(), _autocast_context():
         emb = _as_feature_tensor(clip_model.get_text_features(**inputs))
-    return normalize(emb)[0].cpu().tolist()
-
-
-def embed_text_clap(text: str) -> list[float]:
-    inputs = clap_processor(text=[text], return_tensors="pt", truncation=True)
-    inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
-    with torch.inference_mode(), _autocast_context():
-        emb = _as_feature_tensor(clap_model.get_text_features(**inputs))
     return normalize(emb)[0].cpu().tolist()
 
 
@@ -223,12 +249,11 @@ def optimize_query_parts(query: str) -> Dict[str, str]:
         return parsed
 
 
-def embed_query(parts: Dict[str, str]) -> Tuple[list[float], list[float]]:
+def embed_query(parts: Dict[str, str]) -> Tuple[list[float], list[float] | None]:
     visual_text = parts.get("visual") or parts.get("raw", "")
-    audio_text = parts.get("audio") or parts.get("raw", "")
     clip_vec = embed_text_clip(visual_text)
-    clap_vec = embed_text_clap(audio_text)
-    return clip_vec, clap_vec
+    # MERT is audio-only and does not support text->audio embedding.
+    return clip_vec, None
 
 
 def _point_id(video_id: str, kind: str, key: str) -> str:
@@ -267,7 +292,7 @@ def _load_audio_ffmpeg(path: str, sample_rate: int = _SAMPLE_RATE):
 
 def load_audio(audio_path: str, sample_rate: int = _SAMPLE_RATE):
     if audio_path.lower().endswith(".aac"):
-        return _load_audio_ffmpeg(audio_path, sample_rate=sample_rate)
+        return _load_audio_ffmpeg(audio_path, sample_rate=MERT_SAMPLE_RATE)
     audio, _ = librosa.load(audio_path, sr=sample_rate)
     return audio
 
@@ -304,7 +329,7 @@ def index_video(frames_folder: str, audio_path: str, metadata: Dict, video_id: s
             frame_points.append(
                 {
                     "id": _point_id(video_id, "frame", f"summary_{idx}"),
-                    "vector": {"clip": frame_mean.tolist(), "clap": [0.0] * 512},
+                    "vector": {"clip": frame_mean.tolist(), "mert": [0.0] * MERT_DIM},
                     "payload": {
                         "type": "frame_summary",
                         "video_id": video_id,
@@ -319,10 +344,10 @@ def index_video(frames_folder: str, audio_path: str, metadata: Dict, video_id: s
 
     # Audio (CLAP) - 3-second chunks, batched
     audio_load_start = time.perf_counter()
-    audio = load_audio(audio_path, sample_rate=_SAMPLE_RATE)
+    audio = load_audio(audio_path, sample_rate=MERT_SAMPLE_RATE)
     audio_load_time = time.perf_counter() - audio_load_start
 
-    chunk_size = _SAMPLE_RATE * 3
+    chunk_size = MERT_SAMPLE_RATE * 3
     audio_chunks = []
     for offset in range(0, len(audio), chunk_size):
         audio_chunks.append((offset, audio[offset : offset + chunk_size]))
@@ -336,17 +361,17 @@ def index_video(frames_folder: str, audio_path: str, metadata: Dict, video_id: s
             audio_points.append(
                 {
                     "id": _point_id(video_id, "audio", str(offset)),
-                    "vector": {"clip": [0.0] * 512, "clap": emb},
+                    "vector": {"clip": [0.0] * 512, "mert": emb},
                     "payload": {
                         "type": "audio",
                         "video_id": video_id,
-                        "timestamp": offset / _SAMPLE_RATE,
+                        "timestamp": offset / MERT_SAMPLE_RATE,
                         **metadata,
                     },
                 }
             )
     if settings.AUDIO_SUMMARY_VECTOR and audio_points:
-        audio_matrix = np.asarray([p["vector"]["clap"] for p in audio_points], dtype=np.float32)
+        audio_matrix = np.asarray([p["vector"]["mert"] for p in audio_points], dtype=np.float32)
         audio_mean = audio_matrix.mean(axis=0)
         audio_norm = np.linalg.norm(audio_mean)
         if audio_norm > 0:
@@ -354,7 +379,7 @@ def index_video(frames_folder: str, audio_path: str, metadata: Dict, video_id: s
         audio_points.append(
             {
                 "id": _point_id(video_id, "audio", "summary"),
-                "vector": {"clip": [0.0] * 512, "clap": audio_mean.tolist()},
+                "vector": {"clip": [0.0] * 512, "mert": audio_mean.tolist()},
                 "payload": {
                     "type": "audio_summary",
                     "video_id": video_id,

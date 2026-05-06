@@ -12,7 +12,7 @@ def _tokenize(text: str) -> set[str]:
 
 def _infer_query_intent(parts: dict) -> tuple[float, float]:
     if not settings.SEARCH_ENABLE_INTENT_WEIGHTS:
-        return settings.SEARCH_CLIP_WEIGHT, settings.SEARCH_CLAP_WEIGHT
+        return settings.SEARCH_CLIP_WEIGHT, settings.SEARCH_MERT_WEIGHT
 
     text = f"{parts.get('raw', '')} {parts.get('visual', '')} {parts.get('audio', '')}".lower()
     audio_cues = {
@@ -26,7 +26,7 @@ def _infer_query_intent(parts: dict) -> tuple[float, float]:
     audio_score = sum(1 for w in audio_cues if w in text)
     visual_score = sum(1 for w in visual_cues if w in text)
     if audio_score == 0 and visual_score == 0:
-        return settings.SEARCH_CLIP_WEIGHT, settings.SEARCH_CLAP_WEIGHT
+        return settings.SEARCH_CLIP_WEIGHT, settings.SEARCH_MERT_WEIGHT
 
     total = audio_score + visual_score
     # Keep a floor so either modality can still contribute.
@@ -59,7 +59,7 @@ def search(query: str, limit: int = 20) -> dict:
     parts = optimize_query_parts(query)
     if not parts.get("visual") and not parts.get("audio"):
         parts = parse_query(query)
-    clip_vec, clap_vec = embed_query(parts)
+    clip_vec, mert_vec = embed_query(parts)
 
     modal_limit = max(limit * 3, settings.SEARCH_RERANK_CANDIDATES)
 
@@ -70,12 +70,14 @@ def search(query: str, limit: int = 20) -> dict:
         limit=modal_limit,
     ).points
 
-    clap_hits = qdrant.query_points(
-        collection_name=settings.COLLECTION_NAME,
-        query=clap_vec,
-        using="clap",
-        limit=modal_limit,
-    ).points
+    mert_hits = []
+    if mert_vec is not None:
+        mert_hits = qdrant.query_points(
+            collection_name=settings.COLLECTION_NAME,
+            query=mert_vec,
+            using="mert",
+            limit=modal_limit,
+        ).points
 
     clip_best: dict[str, float] = {}
     clip_evidence: dict[str, dict] = {}
@@ -90,37 +92,40 @@ def search(query: str, limit: int = 20) -> dict:
                 "summary_index": hit.payload.get("summary_index"),
             }
 
-    clap_best: dict[str, float] = {}
-    clap_evidence: dict[str, dict] = {}
-    for hit in clap_hits:
+    mert_best: dict[str, float] = {}
+    mert_evidence: dict[str, dict] = {}
+    for hit in mert_hits:
         vid = hit.payload["video_id"]
         score = float(hit.score)
-        if score > clap_best.get(vid, float("-inf")):
-            clap_best[vid] = score
-            clap_evidence[vid] = {
+        if score > mert_best.get(vid, float("-inf")):
+            mert_best[vid] = score
+            mert_evidence[vid] = {
                 "score": score,
                 "type": hit.payload.get("type"),
                 "timestamp": hit.payload.get("timestamp"),
             }
 
-    clip_weight, clap_weight = _infer_query_intent(parts)
+    clip_weight, inferred_mert_weight = _infer_query_intent(parts)
+    mert_weight = inferred_mert_weight if mert_vec is not None else 0.0
+    if mert_weight == 0.0:
+        clip_weight = 1.0
 
     payload_by_video: dict[str, dict] = {}
     for hit in clip_hits:
         vid = hit.payload["video_id"]
         if vid not in payload_by_video:
             payload_by_video[vid] = hit.payload
-    for hit in clap_hits:
+    for hit in mert_hits:
         vid = hit.payload["video_id"]
         if vid not in payload_by_video:
             payload_by_video[vid] = hit.payload
 
-    all_videos = set(clip_best) | set(clap_best)
+    all_videos = set(clip_best) | set(mert_best)
     scored_rows = []
     for vid in all_videos:
         clip_score = clip_best.get(vid, 0.0)
-        clap_score = clap_best.get(vid, 0.0)
-        base_score = (clip_weight * clip_score) + (clap_weight * clap_score)
+        mert_score = mert_best.get(vid, 0.0)
+        base_score = (clip_weight * clip_score) + (mert_weight * mert_score)
         meta_boost = settings.SEARCH_METADATA_WEIGHT * _metadata_score(parts, payload_by_video.get(vid, {}))
         final_score = base_score + meta_boost
         scored_rows.append(
@@ -130,7 +135,7 @@ def search(query: str, limit: int = 20) -> dict:
                 "base_score": base_score,
                 "metadata_boost": meta_boost,
                 "clip_evidence": clip_evidence.get(vid),
-                "clap_evidence": clap_evidence.get(vid),
+                "mert_evidence": mert_evidence.get(vid),
             }
         )
 
@@ -145,7 +150,7 @@ def search(query: str, limit: int = 20) -> dict:
         },
         "weights": {
             "clip": clip_weight,
-            "clap": clap_weight,
+            "mert": mert_weight,
             "metadata": settings.SEARCH_METADATA_WEIGHT,
         },
         "evidence": top_rows,

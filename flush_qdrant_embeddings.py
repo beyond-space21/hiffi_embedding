@@ -15,7 +15,7 @@ def recreate_collection() -> None:
         collection_name=settings.COLLECTION_NAME,
         vectors_config={
             "clip": VectorParams(size=512, distance=Distance.COSINE),
-            "clap": VectorParams(size=512, distance=Distance.COSINE),
+            "mert": VectorParams(size=768, distance=Distance.COSINE),
         },
     )
 
