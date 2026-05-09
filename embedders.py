@@ -1,4 +1,5 @@
 import json
+import io
 import os
 import numpy as np
 import re
@@ -13,31 +14,20 @@ from typing import Tuple
 import librosa
 import torch
 from openai import OpenAI
-from PIL import Image
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance
 from qdrant_client.models import VectorParams
 from transformers import AutoModel
-from transformers import CLIPModel
-from transformers import CLIPProcessor
 from transformers import Wav2Vec2FeatureExtractor
 
 from config import settings
 
 os.environ["TRANSFORMERS_CACHE"] = settings.CACHE_DIR
 os.environ["HF_HOME"] = settings.CACHE_DIR
+# Suppress non-critical transformers advisory warnings in worker logs.
+os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-# ====================== LOAD MODELS ======================
-clip_model = CLIPModel.from_pretrained(
-    "openai/clip-vit-base-patch32",
-    cache_dir=settings.CACHE_DIR,
-).to(DEVICE)
-clip_processor = CLIPProcessor.from_pretrained(
-    "openai/clip-vit-base-patch32",
-    cache_dir=settings.CACHE_DIR,
-)
 
 MERT_MODEL_NAME = "m-a-p/MERT-v1-95M"
 MERT_SAMPLE_RATE = 24000
@@ -45,16 +35,17 @@ MERT_SAMPLE_RATE = 24000
 mert_model = AutoModel.from_pretrained(
     MERT_MODEL_NAME,
     cache_dir=settings.CACHE_DIR,
+    trust_remote_code=True,
 ).to(DEVICE)
 mert_processor = Wav2Vec2FeatureExtractor.from_pretrained(
     MERT_MODEL_NAME,
     cache_dir=settings.CACHE_DIR,
+    trust_remote_code=True,
 )
 MERT_DIM = int(mert_model.config.hidden_size)
 
 qdrant = QdrantClient(settings.QDRANT_URL)
 openai_client = OpenAI(api_key=settings.OPENAI_API_KEY)
-clip_model.eval()
 mert_model.eval()
 
 _POINT_ID_NS = uuid.UUID("a3f8c2e1-6b4d-5e9f-8c0d-1a2b3c4d5e6f")
@@ -69,7 +60,6 @@ def ensure_collection() -> None:
     qdrant.create_collection(
         collection_name=settings.COLLECTION_NAME,
         vectors_config={
-            "clip": VectorParams(size=512, distance=Distance.COSINE),
             "mert": VectorParams(size=MERT_DIM, distance=Distance.COSINE),
         },
     )
@@ -127,24 +117,6 @@ def _upsert_with_fallback(batch: list[dict]) -> None:
         raise
 
 
-def embed_image(image: Image.Image) -> list[float]:
-    inputs = clip_processor(images=[image], return_tensors="pt")
-    inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
-    with torch.inference_mode(), _autocast_context():
-        emb = _as_feature_tensor(clip_model.get_image_features(**inputs))
-    return normalize(emb)[0].cpu().tolist()
-
-
-def embed_images(images: list[Image.Image]) -> list[list[float]]:
-    if not images:
-        return []
-    inputs = clip_processor(images=images, return_tensors="pt")
-    inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
-    with torch.inference_mode(), _autocast_context():
-        emb = _as_feature_tensor(clip_model.get_image_features(**inputs))
-    return normalize(emb).cpu().tolist()
-
-
 def embed_audio(audio_chunk: Any) -> list[float]:
     inputs = mert_processor(
         [audio_chunk],
@@ -160,10 +132,11 @@ def embed_audio(audio_chunk: Any) -> list[float]:
         outputs = mert_model(**inputs)
         hidden = outputs.last_hidden_state
         attn = inputs.get("attention_mask")
-        if attn is not None:
+        if attn is not None and attn.dim() == 2 and attn.shape[1] == hidden.shape[1]:
             mask = attn.unsqueeze(-1).to(hidden.dtype)
             emb = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1.0)
         else:
+            # MERT downsamples in time; mask may stay at raw sample length.
             emb = hidden.mean(dim=1)
     return normalize(emb)[0].cpu().tolist()
 
@@ -185,20 +158,42 @@ def embed_audio_chunks(audio_chunks: list[Any]) -> list[list[float]]:
         outputs = mert_model(**inputs)
         hidden = outputs.last_hidden_state
         attn = inputs.get("attention_mask")
-        if attn is not None:
+        if attn is not None and attn.dim() == 2 and attn.shape[1] == hidden.shape[1]:
             mask = attn.unsqueeze(-1).to(hidden.dtype)
             emb = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1.0)
         else:
+            # MERT downsamples in time; mask may stay at raw sample length.
             emb = hidden.mean(dim=1)
     return normalize(emb).cpu().tolist()
 
 
-def embed_text_clip(text: str) -> list[float]:
-    inputs = clip_processor(text=[text], return_tensors="pt", truncation=True)
-    inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
-    with torch.inference_mode(), _autocast_context():
-        emb = _as_feature_tensor(clip_model.get_text_features(**inputs))
-    return normalize(emb)[0].cpu().tolist()
+def _synthesize_query_audio(query_text: str) -> np.ndarray | None:
+    if not settings.OPENAI_AUDIO_BRIDGE_ENABLED:
+        return None
+    text = query_text.strip()
+    if not text:
+        return None
+    try:
+        try:
+            response = openai_client.audio.speech.create(
+                model=settings.OPENAI_AUDIO_BRIDGE_MODEL,
+                voice=settings.OPENAI_AUDIO_BRIDGE_VOICE,
+                input=text,
+                response_format="wav",
+            )
+        except TypeError:
+            response = openai_client.audio.speech.create(
+                model=settings.OPENAI_AUDIO_BRIDGE_MODEL,
+                voice=settings.OPENAI_AUDIO_BRIDGE_VOICE,
+                input=text,
+            )
+        if not response.content:
+            return None
+        audio, _ = librosa.load(io.BytesIO(response.content), sr=MERT_SAMPLE_RATE, mono=True)
+        return audio
+    except Exception as exc:
+        print(f"OpenAI audio bridge failed, skipping MERT query vector: {exc}")
+        return None
 
 
 def parse_query(query: str) -> Dict[str, str]:
@@ -215,11 +210,10 @@ def optimize_query_parts(query: str) -> Dict[str, str]:
         return parsed
 
     system_prompt = (
-        "You optimize user video-search queries for dual encoders.\n"
-        "Return JSON only with keys: visual, audio.\n"
-        "visual: concise scene/object/action description for image retrieval.\n"
+        "You optimize user video-search queries for audio retrieval.\n"
+        "Return JSON only with key: audio.\n"
         "audio: concise sound/music/voice description for audio retrieval.\n"
-        "If user intent lacks modality details, infer realistic generic hints.\n"
+        "If user intent lacks audio details, infer realistic generic hints.\n"
         "Do not include markdown."
     )
 
@@ -241,19 +235,19 @@ def optimize_query_parts(query: str) -> Dict[str, str]:
         )
         raw = response.choices[0].message.content or "{}"
         optimized = json.loads(raw)
-        visual = str(optimized.get("visual", "")).strip()
         audio = str(optimized.get("audio", "")).strip()
-        return {"visual": visual, "audio": audio, "raw": query.strip()}
+        return {"visual": "", "audio": audio, "raw": query.strip()}
     except Exception as exc:
         print(f"OpenAI query optimization failed, using raw query: {exc}")
         return parsed
 
 
 def embed_query(parts: Dict[str, str]) -> Tuple[list[float], list[float] | None]:
-    visual_text = parts.get("visual") or parts.get("raw", "")
-    clip_vec = embed_text_clip(visual_text)
-    # MERT is audio-only and does not support text->audio embedding.
-    return clip_vec, None
+    audio_text = parts.get("audio") or parts.get("raw", "")
+    bridge_audio = _synthesize_query_audio(audio_text)
+    if bridge_audio is None or len(bridge_audio) == 0:
+        return [], None
+    return [], embed_audio(bridge_audio)
 
 
 def _point_id(video_id: str, kind: str, key: str) -> str:
@@ -297,50 +291,9 @@ def load_audio(audio_path: str, sample_rate: int = _SAMPLE_RATE):
     return audio
 
 
-def index_video(frames_folder: str, audio_path: str, metadata: Dict, video_id: str) -> int:
+def index_video(audio_path: str, metadata: Dict, video_id: str) -> int:
     t0 = time.perf_counter()
-    frame_points = []
     audio_points = []
-
-    # Frames (CLIP) - batched
-    frame_files = [f for f in sorted(os.listdir(frames_folder)) if f.endswith(".png")]
-    frame_items = []
-    for file_name in frame_files:
-        frame_number = int(file_name.split("_")[-1].split(".")[0])
-        with Image.open(os.path.join(frames_folder, file_name)) as img:
-            frame_items.append((frame_number, img.convert("RGB")))
-
-    frame_embed_start = time.perf_counter()
-    all_frame_embeddings: list[list[float]] = []
-    for batch in _chunks(frame_items, max(1, settings.FRAME_BATCH_SIZE)):
-        batch_images = [item[1] for item in batch]
-        batch_embeddings = embed_images(batch_images)
-        all_frame_embeddings.extend(batch_embeddings)
-    if all_frame_embeddings:
-        frame_matrix = np.asarray(all_frame_embeddings, dtype=np.float32)
-        summary_vectors = max(1, settings.FRAME_SUMMARY_VECTORS)
-        summary_vectors = min(summary_vectors, len(frame_matrix))
-        grouped = np.array_split(frame_matrix, summary_vectors)
-        for idx, group in enumerate(grouped):
-            frame_mean = group.mean(axis=0)
-            frame_norm = np.linalg.norm(frame_mean)
-            if frame_norm > 0:
-                frame_mean = frame_mean / frame_norm
-            frame_points.append(
-                {
-                    "id": _point_id(video_id, "frame", f"summary_{idx}"),
-                    "vector": {"clip": frame_mean.tolist(), "mert": [0.0] * MERT_DIM},
-                    "payload": {
-                        "type": "frame_summary",
-                        "video_id": video_id,
-                        "frame_count": len(all_frame_embeddings),
-                        "summary_index": idx,
-                        "summary_vectors": summary_vectors,
-                        **metadata,
-                    },
-                }
-            )
-    frame_embed_time = time.perf_counter() - frame_embed_start
 
     # Audio (CLAP) - 3-second chunks, batched
     audio_load_start = time.perf_counter()
@@ -361,11 +314,12 @@ def index_video(frames_folder: str, audio_path: str, metadata: Dict, video_id: s
             audio_points.append(
                 {
                     "id": _point_id(video_id, "audio", str(offset)),
-                    "vector": {"clip": [0.0] * 512, "mert": emb},
+                    "vector": {"mert": emb},
                     "payload": {
                         "type": "audio",
                         "video_id": video_id,
                         "timestamp": offset / MERT_SAMPLE_RATE,
+                        "group_by": "video_id",
                         **metadata,
                     },
                 }
@@ -379,18 +333,19 @@ def index_video(frames_folder: str, audio_path: str, metadata: Dict, video_id: s
         audio_points.append(
             {
                 "id": _point_id(video_id, "audio", "summary"),
-                "vector": {"clip": [0.0] * 512, "mert": audio_mean.tolist()},
+                "vector": {"mert": audio_mean.tolist()},
                 "payload": {
                     "type": "audio_summary",
                     "video_id": video_id,
                     "chunk_count": len(audio_chunks),
+                    "group_by": "video_id",
                     **metadata,
                 },
             }
         )
     audio_embed_time = time.perf_counter() - audio_embed_start
 
-    points = frame_points + audio_points
+    points = audio_points
     upsert_start = time.perf_counter()
     if points:
         _upsert_points_batched(points)
@@ -400,7 +355,6 @@ def index_video(frames_folder: str, audio_path: str, metadata: Dict, video_id: s
     print(
         "Indexed video "
         f"{video_id} ({len(points)} points) | "
-        f"frames={len(frame_points)} in {frame_embed_time:.2f}s | "
         f"audio_load={audio_load_time:.2f}s | "
         f"audio_emb={audio_embed_time:.2f}s | "
         f"upsert={upsert_time:.2f}s | total={total_time:.2f}s"

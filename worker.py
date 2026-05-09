@@ -17,7 +17,7 @@ def _safe_video_dir(video_id: str) -> str:
     return "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in video_id)
 
 
-def preprocess_video(mp4_url: str, video_id: str) -> tuple[str, str]:
+def preprocess_video(mp4_url: str, video_id: str) -> str:
     safe_video_id = _safe_video_dir(video_id)
     base_dir = Path(settings.TEMP_DIR) / safe_video_id
     frames_dir = base_dir / "frames"
@@ -46,12 +46,10 @@ def preprocess_video(mp4_url: str, video_id: str) -> tuple[str, str]:
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(f"make preprocessing failed: {exc}") from exc
 
-    if not frames_dir.exists() or not any(frames_dir.glob("*.png")):
-        raise RuntimeError(f"no frames were generated for '{video_id}'")
     if not audio_path.exists():
         raise RuntimeError(f"audio file was not generated for '{video_id}'")
 
-    return str(frames_dir), str(audio_path)
+    return str(audio_path)
 
 
 def consume_forever(worker_id: int) -> None:
@@ -102,18 +100,16 @@ def consume_forever(worker_id: int) -> None:
             video_id = msg["video_id"]
             mp4_url = msg["mp4_url"]
             print(
-                f"[worker-{worker_id}] Processing video: {video_id} "
-                f"(frame_fps={settings.FRAME_EXTRACT_FPS}, scene_thr={settings.FRAME_SCENE_THRESHOLD})"
+                f"[worker-{worker_id}] Processing video: {video_id} (audio-only indexing)"
             )
 
             t0 = time.perf_counter()
             preprocess_start = time.perf_counter()
-            frames_folder, audio_path = preprocess_video(mp4_url=mp4_url, video_id=video_id)
+            audio_path = preprocess_video(mp4_url=mp4_url, video_id=video_id)
             preprocess_time = time.perf_counter() - preprocess_start
 
             index_start = time.perf_counter()
             vector_position = index_video(
-                frames_folder=frames_folder,
                 audio_path=audio_path,
                 metadata=msg.get("metadata", {}),
                 video_id=video_id,

@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str
     OPENAI_QUERY_MODEL: str = "gpt-4o-mini"
     OPENAI_QUERY_OPTIMIZATION: bool = True
+    OPENAI_AUDIO_BRIDGE_ENABLED: bool = True
+    OPENAI_AUDIO_BRIDGE_MODEL: str = "gpt-4o-mini-tts"
+    OPENAI_AUDIO_BRIDGE_VOICE: str = "alloy"
     BASE_API_URL: str | None = None
     BASE_API_VIDEO_URL: str | None = None
     AUTH_X_APP: str | None = None

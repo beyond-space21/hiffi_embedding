@@ -111,7 +111,7 @@ def publish_jobs(jobs: list[dict]) -> int:
 
 def main() -> None:
     limit = 20
-    offset = 0
+    offset = 12
     seed = None
 
     videos = fetch_videos(limit=limit, offset=offset, seed=seed)

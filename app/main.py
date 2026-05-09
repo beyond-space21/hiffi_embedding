@@ -3,6 +3,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import Field
 from pydantic import BaseModel
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -24,13 +25,14 @@ app.add_middleware(
 
 
 class SearchRequest(BaseModel):
-    query: str
-    limit: int = 20
+    query: str = Field(min_length=1, max_length=1000)
+    limit: int = Field(default=20, ge=1, le=100)
 
 
 @app.post("/search")
 async def search_endpoint(req: SearchRequest) -> dict:
-    return search(req.query, req.limit)
+    query = req.query.strip()
+    return search(query, req.limit)
 
 
 @app.get("/health")
