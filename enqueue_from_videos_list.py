@@ -1,7 +1,8 @@
+import argparse
 import json
+from urllib import error as urlerror
 from urllib import parse as urlparse
 from urllib import request as urlrequest
-from urllib import error as urlerror
 
 import pika
 
@@ -26,7 +27,13 @@ def _to_absolute_video_url(video_url: str) -> str:
     return f"{settings.BASE_API_VIDEO_URL.rstrip('/')}/{video_url.lstrip('/')}"
 
 
-def fetch_videos(limit: int = 20, offset: int = 0, seed: str | None = None) -> list[dict]:
+def fetch_list_page(limit: int, offset: int, seed: str | None = None) -> tuple[list[dict], int, int, int]:
+    """
+    GET /videos/list for one page.
+
+    Returns (videos, applied_limit, applied_offset, count) using API pagination
+    metadata when present; otherwise falls back to request params and len(videos).
+    """
     if not settings.AUTH_X_APP:
         raise RuntimeError("AUTH_X_APP is required in environment")
 
@@ -48,10 +55,32 @@ def fetch_videos(limit: int = 20, offset: int = 0, seed: str | None = None) -> l
     except urlerror.URLError as exc:
         raise RuntimeError(f"/videos/list request failed: {exc.reason}") from exc
 
-    videos = payload.get("data", {}).get("videos", [])
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        data = {}
+
+    videos = data.get("videos", [])
     if not isinstance(videos, list):
         raise RuntimeError("Unexpected /videos/list format: data.videos is not a list")
-    return videos
+
+    applied_limit = data.get("limit", payload.get("limit", limit))
+    applied_offset = data.get("offset", payload.get("offset", offset))
+    count = data.get("count", payload.get("count", len(videos)))
+
+    try:
+        applied_limit = int(applied_limit)
+    except (TypeError, ValueError):
+        applied_limit = limit
+    try:
+        applied_offset = int(applied_offset)
+    except (TypeError, ValueError):
+        applied_offset = offset
+    try:
+        count = int(count)
+    except (TypeError, ValueError):
+        count = len(videos)
+
+    return videos, applied_limit, applied_offset, count
 
 
 def build_jobs(videos: list[dict]) -> list[dict]:
@@ -78,10 +107,7 @@ def build_jobs(videos: list[dict]) -> list[dict]:
     return jobs
 
 
-def publish_jobs(jobs: list[dict]) -> int:
-    if not jobs:
-        return 0
-
+def _rabbit_channel():
     connection = pika.BlockingConnection(
         pika.ConnectionParameters(
             host=settings.RABBITMQ_HOST,
@@ -93,8 +119,10 @@ def publish_jobs(jobs: list[dict]) -> int:
             ),
         )
     )
-    channel = connection.channel()
+    return connection, connection.channel()
 
+
+def publish_jobs_on_channel(channel, jobs: list[dict]) -> int:
     published = 0
     for job in jobs:
         channel.basic_publish(
@@ -104,20 +132,77 @@ def publish_jobs(jobs: list[dict]) -> int:
             properties=pika.BasicProperties(delivery_mode=2),
         )
         published += 1
-
-    connection.close()
     return published
 
 
-def main() -> None:
-    limit = 20
-    offset = 12
-    seed = None
+def enqueue_all_videos(
+    page_size: int = 100,
+    start_offset: int = 0,
+    seed: str | None = None,
+) -> tuple[int, int]:
+    """
+    Walk /videos/list with offset/limit pagination until a short page
+    (count < applied_limit), then enqueue every built job.
+    """
+    page_size = max(1, min(100, page_size))
+    offset = max(0, start_offset)
+    total_published = 0
+    pages = 0
 
-    videos = fetch_videos(limit=limit, offset=offset, seed=seed)
-    jobs = build_jobs(videos)
-    total = publish_jobs(jobs)
-    print(f"Queued {total} video jobs from /videos/list (limit={limit}, offset={offset})")
+    connection, channel = _rabbit_channel()
+    try:
+        while True:
+            videos, applied_limit, applied_offset, count = fetch_list_page(
+                limit=page_size,
+                offset=offset,
+                seed=seed,
+            )
+            pages += 1
+            jobs = build_jobs(videos)
+            total_published += publish_jobs_on_channel(channel, jobs)
+
+            if count < applied_limit:
+                break
+            offset += count
+    finally:
+        connection.close()
+
+    return total_published, pages
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Enqueue all public videos from /videos/list (paginated) to RabbitMQ.",
+    )
+    parser.add_argument(
+        "--page-size",
+        type=int,
+        default=100,
+        help="Request limit per call (1–100; API may clamp). Default 100.",
+    )
+    parser.add_argument(
+        "--start-offset",
+        type=int,
+        default=0,
+        help="Initial offset (non-negative). Default 0.",
+    )
+    parser.add_argument(
+        "--seed",
+        default=None,
+        help="Optional seed query parameter if the API supports it.",
+    )
+    args = parser.parse_args()
+
+    total, pages = enqueue_all_videos(
+        page_size=args.page_size,
+        start_offset=args.start_offset,
+        seed=args.seed,
+    )
+    print(
+        f"Queued {total} video job(s) from /videos/list "
+        f"({pages} page(s), page_size={max(1, min(100, args.page_size))}, "
+        f"start_offset={max(0, args.start_offset)})"
+    )
 
 
 if __name__ == "__main__":

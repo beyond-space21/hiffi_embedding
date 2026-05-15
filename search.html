@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hiffi — Audio Search</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0c0c0f;
+      --surface: #16161c;
+      --surface-hover: #1e1e26;
+      --border: #2a2a34;
+      --text: #f4f4f5;
+      --muted: #9898a6;
+      --accent: #ff4d6d;
+      --accent-dim: #ff4d6d22;
+      --success: #34d399;
+      --radius: 12px;
+      --font: "DM Sans", system-ui, sans-serif;
+      --serif: "Instrument Serif", Georgia, serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.5;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 80% 50% at 50% -20%, var(--accent-dim), transparent),
+        radial-gradient(ellipse 60% 40% at 100% 100%, #3b2a5c33, transparent);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    .wrap {
+      position: relative;
+      z-index: 1;
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2.5rem 1.25rem 4rem;
+    }
+
+    header {
+      margin-bottom: 2rem;
+    }
+
+    header h1 {
+      font-family: var(--serif);
+      font-size: clamp(2rem, 5vw, 2.75rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      margin-bottom: 0.35rem;
+    }
+
+    header p {
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+
+    label {
+      display: block;
+      font-size: 0.75rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      margin-bottom: 0.4rem;
+    }
+
+    .row {
+      display: flex;
+      gap: 0.75rem;
+      flex-wrap: wrap;
+    }
+
+    .row > * { flex: 1; min-width: 0; }
+
+    .row .narrow { flex: 0 0 5.5rem; }
+
+    input[type="text"],
+    input[type="url"],
+    input[type="number"] {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font: inherit;
+      font-size: 0.95rem;
+      padding: 0.65rem 0.85rem;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    input:focus {
+      border-color: var(--accent);
+    }
+
+    button[type="submit"] {
+      width: 100%;
+      margin-top: 1rem;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font: inherit;
+      font-size: 0.95rem;
+      font-weight: 600;
+      padding: 0.75rem 1rem;
+      cursor: pointer;
+      transition: filter 0.15s, transform 0.1s;
+    }
+
+    button[type="submit"]:hover { filter: brightness(1.08); }
+    button[type="submit"]:active { transform: scale(0.99); }
+    button[type="submit"]:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    .status {
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-bottom: 1rem;
+      min-height: 1.25rem;
+    }
+
+    .status.error { color: #f87171; }
+    .status.ok { color: var(--success); }
+
+    .meta {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-bottom: 1rem;
+      padding: 0.75rem 1rem;
+      background: var(--bg);
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      word-break: break-word;
+    }
+
+    .meta strong { color: var(--text); font-weight: 500; }
+
+    ul.results {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .result-item {
+      display: block;
+      text-decoration: none;
+      color: inherit;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1rem 1.1rem;
+      transition: background 0.15s, border-color 0.15s, transform 0.1s;
+    }
+
+    .result-item:hover {
+      background: var(--surface-hover);
+      border-color: #3f3f4d;
+      transform: translateX(2px);
+    }
+
+    .result-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      margin-bottom: 0.35rem;
+    }
+
+    .rank {
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: var(--accent);
+      min-width: 1.75rem;
+    }
+
+    .score {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--success);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .video-id {
+      font-size: 0.8rem;
+      color: var(--muted);
+      font-family: ui-monospace, "Cascadia Code", monospace;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .open-hint {
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin-top: 0.25rem;
+    }
+
+    .empty {
+      text-align: center;
+      padding: 3rem 1rem;
+      color: var(--muted);
+    }
+
+    .empty svg {
+      width: 48px;
+      height: 48px;
+      opacity: 0.35;
+      margin-bottom: 1rem;
+    }
+
+    @media (max-width: 520px) {
+      .row .narrow { flex: 1 1 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Audio search</h1>
+      <p>Query the embedding API and open matches on Hiffi.</p>
+    </header>
+
+    <form class="panel" id="search-form">
+      <div style="margin-bottom: 1rem">
+        <label for="api-base">API base URL</label>
+        <input type="url" id="api-base" placeholder="http://localhost:8000" required />
+      </div>
+      <div style="margin-bottom: 1rem">
+        <label for="query">Search query</label>
+        <input type="text" id="query" placeholder="e.g. fast, jazz piano, calm voice" required autofocus />
+      </div>
+      <div class="row">
+        <div class="narrow">
+          <label for="limit">Limit</label>
+          <input type="number" id="limit" value="20" min="1" max="100" />
+        </div>
+      </div>
+      <button type="submit" id="submit-btn">Search</button>
+    </form>
+
+    <p class="status" id="status" aria-live="polite"></p>
+    <div class="meta" id="meta" hidden></div>
+    <ul class="results" id="results"></ul>
+    <div class="empty" id="empty" hidden>
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+      </svg>
+      <p>No results yet. Run a search above.</p>
+    </div>
+  </div>
+
+  <script>
+    const WATCH_BASE = "https://www.hiffi.com/watch/";
+
+    const form = document.getElementById("search-form");
+    const apiBaseInput = document.getElementById("api-base");
+    const queryInput = document.getElementById("query");
+    const limitInput = document.getElementById("limit");
+    const statusEl = document.getElementById("status");
+    const metaEl = document.getElementById("meta");
+    const resultsEl = document.getElementById("results");
+    const emptyEl = document.getElementById("empty");
+    const submitBtn = document.getElementById("submit-btn");
+
+    const params = new URLSearchParams(location.search);
+    const defaultApi =
+      params.get("api") ||
+      (location.protocol.startsWith("http") ? location.origin : "http://localhost:8000");
+    apiBaseInput.value = defaultApi;
+    if (params.get("q")) queryInput.value = params.get("q");
+
+    function watchUrl(videoId) {
+      return WATCH_BASE + encodeURIComponent(videoId);
+    }
+
+    function setStatus(text, kind) {
+      statusEl.textContent = text;
+      statusEl.className = "status" + (kind ? " " + kind : "");
+    }
+
+    function renderMeta(data) {
+      const oq = data.optimized_query || {};
+      const parts = [
+        oq.has_acoustic_intent != null && `<strong>Acoustic intent:</strong> ${oq.has_acoustic_intent}`,
+        oq.mert_bridge && `<strong>Bridge:</strong> ${escapeHtml(oq.mert_bridge)}`,
+        data.retrieval_mode && `<strong>Mode:</strong> ${data.retrieval_mode}`,
+      ].filter(Boolean);
+      if (!parts.length) {
+        metaEl.hidden = true;
+        return;
+      }
+      metaEl.innerHTML = parts.join(" · ");
+      metaEl.hidden = false;
+    }
+
+    function escapeHtml(s) {
+      const d = document.createElement("div");
+      d.textContent = s;
+      return d.innerHTML;
+    }
+
+    function renderResults(data) {
+      resultsEl.innerHTML = "";
+      const rows = data.results || [];
+
+      if (!rows.length) {
+        emptyEl.hidden = false;
+        emptyEl.querySelector("p").textContent = "No videos matched this query.";
+        return;
+      }
+
+      emptyEl.hidden = true;
+      const evidenceById = {};
+      (data.evidence || []).forEach((ev) => {
+        evidenceById[ev.video_id] = ev;
+      });
+
+      rows.forEach(([videoId, score], index) => {
+        const li = document.createElement("li");
+        const a = document.createElement("a");
+        a.className = "result-item";
+        a.href = watchUrl(videoId);
+        a.target = "_blank";
+        a.rel = "noopener noreferrer";
+
+        const ev = evidenceById[videoId];
+        const ts = ev?.mert_evidence?.timestamp;
+        const tsLabel = ts != null ? ` · @ ${formatTime(ts)}` : "";
+
+        a.innerHTML = `
+          <div class="result-top">
+            <span class="rank">#${index + 1}</span>
+            <span class="score">${Number(score).toFixed(4)}</span>
+          </div>
+          <div class="video-id" title="${escapeHtml(videoId)}">${escapeHtml(videoId)}</div>
+          <div class="open-hint">Opens on hiffi.com${tsLabel}</div>
+        `;
+        li.appendChild(a);
+        resultsEl.appendChild(li);
+      });
+    }
+
+    function formatTime(seconds) {
+      const m = Math.floor(seconds / 60);
+      const s = Math.floor(seconds % 60);
+      return `${m}:${String(s).padStart(2, "0")}`;
+    }
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const query = queryInput.value.trim();
+      const limit = Math.min(100, Math.max(1, Number(limitInput.value) || 20));
+      const base = apiBaseInput.value.replace(/\/$/, "");
+
+      if (!query) return;
+
+      const url = new URL(location.href);
+      url.searchParams.set("q", query);
+      url.searchParams.set("api", base);
+      history.replaceState(null, "", url);
+
+      submitBtn.disabled = true;
+      setStatus("Searching…", "");
+      resultsEl.innerHTML = "";
+      emptyEl.hidden = true;
+      metaEl.hidden = true;
+
+      try {
+        const res = await fetch(`${base}/search`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query, limit }),
+        });
+
+        if (!res.ok) {
+          const errText = await res.text();
+          throw new Error(errText || `HTTP ${res.status}`);
+        }
+
+        const data = await res.json();
+        renderMeta(data);
+        renderResults(data);
+        const n = (data.results || []).length;
+        setStatus(n ? `Found ${n} video${n === 1 ? "" : "s"}.` : "No matches.", n ? "ok" : "");
+      } catch (err) {
+        setStatus(err.message || "Search failed.", "error");
+        emptyEl.hidden = false;
+        emptyEl.querySelector("p").textContent =
+          "Could not reach the API. Is the server running? Check the base URL and CORS.";
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+
+    if (params.get("q")) form.requestSubmit();
+  </script>
+</body>
+</html>

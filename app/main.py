@@ -3,6 +3,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import Field
 from pydantic import BaseModel
 
@@ -33,6 +34,11 @@ class SearchRequest(BaseModel):
 async def search_endpoint(req: SearchRequest) -> dict:
     query = req.query.strip()
     return search(query, req.limit)
+
+
+@app.get("/")
+async def search_ui() -> FileResponse:
+    return FileResponse(ROOT_DIR / "search.html")
 
 
 @app.get("/health")
